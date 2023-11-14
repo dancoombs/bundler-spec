@@ -45,6 +45,7 @@ It consists of two main sections:
   - [The discovery domain: discv5](#the-discovery-domain-discv5)
     - [Integration into libp2p stacks](#integration-into-libp2p-stacks)
     - [ENR structure](#enr-structure)
+      - [Chain id field](#chain-id-field)
       - [Mempools bitfield](#mempools-bitfield)
   - [Container Specifications](#container-specifications)
       - [`UserOp`](#userop)
@@ -572,9 +573,19 @@ The ENR MAY contain the following entries:
 
 Specifications of these parameters can be found in the [ENR Specification](http://eips.ethereum.org/EIPS/eip-778).
 
+#### Chain id field
+
+ENRs MUST carry a `chain_id` key containing the ID of the network the bundler is connected to. This is done to ensure connections are made with peers on the intended Ethereum network.
+
+| Key        | Value        |
+|:-----------|:-------------|
+| `chain_id` | SSZ `uint64` |
+
+Clients SHOULD connect to peers with a `chain_id` that matches local values.
+
 #### Mempools bitfield
 
-The ENR `mempools` entry signifies the mempools subnet bitfield with the following form
+The ENR `mempool_subnets` entry signifies the mempools subnet bitfield with the following form
 to more easily discover peers participating in particular mempool id gossip subnets.
 
 | Key                 | Value                                            |
