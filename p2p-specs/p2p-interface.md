@@ -98,10 +98,12 @@ This section outlines constants that are used in this spec.
 
 | Name | Value | Description |
 |---|---|---|
-| `GOSSIP_MAX_SIZE`    | `2**20` (= 1048576, 1 MiB) | The maximum allowed size of uncompressed gossip messages. |
-| `MAX_OPS_PER_REQUEST`| `4096` | Maximum number of UserOps in a single request. |
-| `RESP_TIMEOUT`	     | `10s` | The maximum time for complete response transfer. |
-| `TTFB_TIMEOUT`       | `5s` | The maximum time to wait for first byte of request response (time-to-first-byte). |
+| `GOSSIP_MAX_SIZE`               | `2**20` (= 1048576, 1 MiB) | The maximum allowed size of uncompressed gossip messages. |
+| `MAX_OPS_PER_REQUEST`           | `4096`                     | Maximum number of UserOps in a single request. |
+| `RESP_TIMEOUT`	                | `10s`                      | The maximum time for complete response transfer. |
+| `TTFB_TIMEOUT`                  | `5s`                       | The maximum time to wait for first byte of request response (time-to-first-byte). |
+| `MESSAGE_DOMAIN_INVALID_SNAPPY` | `DomainType('0x00000000')` | 4-byte domain for gossip message-id isolation of *invalid* snappy messages |
+| `MESSAGE_DOMAIN_VALID_SNAPPY`   | `DomainType('0x01000000')` | 4-byte domain for gossip message-id isolation of *valid* snappy messages |
 
 
 ## MetaData
@@ -142,12 +144,15 @@ Bundlers MUST reject (fail validation) messages that are over this size limit.
 Likewise, Bundlers MUST NOT emit or propagate messages larger than this limit.
 
 The `message-id` of a gossipsub message MUST be the following 20 byte value computed from the message data:
-* If `message.data` has a valid Snappy decompression, set `message-id` to the first 20 bytes of the `SHA256` hash of
-  the concatenation of `MESSAGE_DOMAIN_VALID_SNAPPY` with the Snappy decompressed message data,
-  i.e. `SHA256(MESSAGE_DOMAIN_VALID_SNAPPY + snappy_decompress(message.data))[:20]`.
-* Otherwise, set `message-id` to the first 20 bytes of the `SHA256` hash of
-  the concatenation of `MESSAGE_DOMAIN_INVALID_SNAPPY` with the raw message data,
-  i.e. `SHA256(MESSAGE_DOMAIN_INVALID_SNAPPY + message.data)[:20]`.
+* If `message.data` has a valid snappy decompression, set `message-id` to the first 20 bytes of the `SHA256` hash of the concatenation of the following data: `MESSAGE_DOMAIN_VALID_SNAPPY`, the length of the topic byte string (encoded as little-endian `uint64`), the topic byte string, and the snappy decompressed message data
+```
+SHA256(MESSAGE_DOMAIN_VALID_SNAPPY + uint_to_bytes(uint64(len(message.topic))) + message.topic + snappy_decompress(message.data))[:20]
+```
+
+* Otherwise, set `message-id` to the first 20 bytes of the `SHA256` hash of the concatenation of the following data: `MESSAGE_DOMAIN_INVALID_SNAPPY`, the length of the topic byte string (encoded as little-endian `uint64`), the topic byte string, and the raw message data:
+```
+SHA256(MESSAGE_DOMAIN_INVALID_SNAPPY + uint_to_bytes(uint64(len(message.topic))) + message.topic + message.data)[:20]
+```
 
 *Note*: The above logic handles two exceptional cases:
 (1) multiple Snappy `data` can decompress to the same value,
@@ -155,9 +160,9 @@ and (2) some message `data` can fail to Snappy decompress altogether.
 
 The payload is carried in the `data` field of a gossipsub message, and varies depending on the topic:
 
-| Name                           | Message Type                    |
-|--------------------------------|---------------------------------|
-| `user_ops_with_entry_point`    | `UserOperationsWithEntryPoint`  |
+| Name                       | Message Type            |
+|----------------------------|-------------------------|
+| `verified_user_operations` | `VerifiedUserOperation` |
 
 Bundlers MUST reject (fail validation) messages containing an incorrect type, or invalid payload.
 
@@ -168,22 +173,28 @@ For any optional queueing, Bundlers SHOULD maintain maximum queue sizes to avoid
 
 #### Global topics
 
-The primary global topics used to propagate user operations to all nodes on the network is `UserOperationsWithEntryPoint`.
+The primary global topics used to propagate user operations to all nodes on the network is `verified_user_operations`.
 
-##### `user_ops_with_entry_point`
+##### `verified_user_operations`
 
-The `user_ops_with_entry_point` topic is the concatenation of EntryPoint address and a list of UserOperations corresponding to the entry point address. This message is serialized using SSZ.
+The `verified_user_operations` topic is used to gossip user operations on mempool topics where the user operation is valid.
 
-The following validations MUST pass before forwarding the `user_ops_with_entry_point` on the network:
-- [IGNORE] `verified_at_block_hash` is too far in the past.
-- [REJECT] If any of the sanity checks specified in the [EIP](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-4337.md#client-behavior-upon-receiving-a-useroperation) fails.
-- [REJECT] If the simulated validation of the user operation fails.
+The following validations MUST pass before forwarding the `verified_user_operations` on the network:
+- _[IGNORE]_ `verified_at_block_hash` is too far in the past.
+- _[REJECT]_ If any of the sanity checks specified in the [EIP](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-4337.md#client-behavior-upon-receiving-a-useroperation) fails.
+- _[REJECT]_ If the simulated validation of the user operation fails.
+
+Upon receiving a user operation from an `eth_sendUserOperation` RPC call, a bundler SHOULD:
+
+1. Simulate the user operation to determine which mempools it is valid on.
+2. It the user operation is valid on the canonical mempool, ONLY send it on the canonical mempool topic.
+3. Else, gossip the user operation on each mempool topic for which the user operation is valid.
 
 ### Encodings
 
 Topics are post-fixed with an encoding. Encodings define how the payload of a gossipsub message is encoded.
 
-ssz_snappy - All objects are SSZ-encoded and then compressed with Snappy block compression. Example: The `user_ops_with_entry_point` topic string of the canonical mempool is /account_abstraction/<mempool_id>/user_ops_with_entry_point/ssz_snappy, the <mempool_id> is `TBD` (the IPFS hash of the mempool yaml/JSON file) and the data field of a gossipsub message is a UserOpsWithEntryPoint that has been SSZ-encoded and then compressed with Snappy.
+ssz_snappy - All objects are SSZ-encoded and then compressed with Snappy block compression. Example: The `verified_user_operations` topic string of the canonical mempool is /account_abstraction/<mempool_id>/verified_user_operations/ssz_snappy, the <mempool_id> is `TBD` (the IPFS hash of the mempool yaml/JSON file) and the data field of a gossipsub message is a UserOpsWithEntryPoint that has been SSZ-encoded and then compressed with Snappy.
 Snappy has two formats: "block" and "frames" (streaming). Gossip messages remain relatively small (100s of bytes to 100s of kilobytes) so basic Snappy block compression is used to avoid the additional overhead associated with Snappy frames.
 
 Implementations MUST use a single encoding for gossip. Changing an encoding will require coordination between participating implementations.
@@ -606,12 +617,10 @@ class UserOp(Container):
     signature: bytes
 ```
 
-#### `UserOperationsWithEntryPoint`
+#### `VerifiedUserOperation`
 
 ```python
-class UserOperationsWithEntryPoint(Container):
-    entry_point_contract: Address
+class VerifiedUserOperation(Container):
+    user_operation: UserOp
     verified_at_block_hash: uint256
-    chain_id: uint256
-    user_operations: List[UserOp, MAX_OPS_PER_REQUEST]
 ```
