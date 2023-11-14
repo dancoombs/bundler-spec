@@ -98,10 +98,11 @@ This section outlines constants that are used in this spec.
 
 | Name | Value | Description |
 |---|---|---|
-| `GOSSIP_MAX_SIZE`    | `2**20` (= 1048576, 1 MiB) | The maximum allowed size of uncompressed gossip messages. |
-| `MAX_OPS_PER_REQUEST`| `4096` | Maximum number of UserOps in a single request. |
-| `RESP_TIMEOUT`	     | `10s` | The maximum time for complete response transfer. |
-| `TTFB_TIMEOUT`       | `5s` | The maximum time to wait for first byte of request response (time-to-first-byte). |
+| `GOSSIP_MAX_SIZE`           | `2**20` (= 1048576, 1 MiB) | The maximum allowed size of uncompressed gossip messages. |
+| `MAX_OPS_PER_REQUEST`       | `4096` | Maximum number of UserOps in a single request. |
+| `RESP_TIMEOUT`	            | `10s` | The maximum time for complete response transfer. |
+| `TTFB_TIMEOUT`              | `5s` | The maximum time to wait for first byte of request response (time-to-first-byte). |
+| `POOLED_HASHES_LIST_TIMEOUT`| `10s` | The amount of time to maintain a list of pooled user operation hashes for a peer during sync. |
 
 
 ## MetaData
@@ -494,7 +495,6 @@ Request Content:
 
 ```
 (
-  mempool: Bytes32
   offset: uint64
 )
 ```
@@ -502,12 +502,23 @@ Request Content:
 Response Content: 
 ```
 (
-  more_flag: uint64
+  total_count: uint64
   hashes: List[Bytes32, MAX_OPS_PER_REQUEST]
 )
 ```
 
-The `pooled_user_ops_by_hash` requests UserOp mempool of all connected peers as soon as bundler node starts up. The node requests UserOps from the recipients mempool for a given `mempool_id` and `offset`. The `offset` is set to `0` for the initial call. The recommended soft limit for PooledUserOpHashes requests is `MAX_OPS_PER_REQUEST` hashes. The recipient may enforce an arbitrary limit on the response (size or serving time), which must not be considered a protocol violation. The `more_flag` is set to 0, if the connected peer's reported hashes is <= to `MAX_OPS_PER_REQUEST`. Otherwise the `more_flag` is set to a value > 0. The value of `more_flag` can be used to determine the number of subsequent req/resp a node has to perform to refetch the missing hashes from the connected peer.
+The `pooled_user_ops_by_hash` request is used to sync the mempool contents of a connected peer. Clients MAY send this request to each peer as they are connected when the bundler node starts up in order to sync their mempool.
+
+As part of the initial handshake process the recipient of this request should know the mempool IDs that the requester and recipient have in common. The recipient should construct a list of user operation hashes from these common mempools and maintain this list for the requester. The response should be constructed starting from the received `offset` into this list. The response has a recommended soft limit of `MAX_OPS_PER_REQUEST` hashes and the `total_count` contains the total size of this common mempool user operation list (not the total length of `hashes`). The recipient may enforce an arbitrary limit on the response (size or serving time), which must not be considered a protocol violation.
+
+The recipient of the request is required to maintain this list of user operation hashes for up to `POOLED_HASHES_LIST_TIMEOUT` seconds. If a request is received with an `offset` of 0, the recipient should reconstruct the list. After `POOLED_HASHES_LIST_TIMEOUT` seconds, the recipient can drop the list and fail any request with a nonzero `offset`.
+
+The requester SHOULD:
+
+- Set the initial offset to 0 to signal to the recipient to generate a new sync list.
+- Set the offset for any subsequent requests to the next user operation hash they wish to receive, up to `total_count`.
+- Complete the entire sync process within `POOLED_HASHES_LIST_TIMEOUT` seconds.
+- Disconnect from any peer that responds with a user operation that does not belong to one of their supported mempools.
 
 The request/response MUST be encoded as a single SSZ-field.
 
